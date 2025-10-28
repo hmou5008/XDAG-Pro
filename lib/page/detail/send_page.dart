@@ -43,6 +43,12 @@ class SendPage extends StatefulWidget {
 class _SendPageState extends State<SendPage> {
   late TextEditingController controller;
   late TextEditingController controller2;
+  late TextEditingController controller3;
+
+  String fee = "";
+  bool showFeeBox = false;
+  String averageFee = "0.10 XDAG";
+  bool isLoadingAverageFee = false;
   String amount = "";
   String remark = "";
   String error = "";
@@ -56,6 +62,7 @@ class _SendPageState extends State<SendPage> {
     super.initState();
     controller = TextEditingController();
     controller2 = TextEditingController();
+    controller3 = TextEditingController();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       SendPageRouteParams args = SendPageRouteParams(address: '');
@@ -68,6 +75,7 @@ class _SendPageState extends State<SendPage> {
         amount = args.amount;
         remark = args.remark;
       });
+      fetchAverageFee();
     });
   }
 
@@ -77,6 +85,46 @@ class _SendPageState extends State<SendPage> {
     cancelToken.cancel();
     dio.close();
     super.dispose();
+  }
+
+  Future<void> fetchAverageFee() async {
+    setState(() {
+      isLoadingAverageFee = true;
+    });
+    try {
+      ConfigModal config = Provider.of<ConfigModal>(context, listen: false);
+      String rpcURL = config.getCurrentRpc();
+
+      Response response = await dio.post(
+        rpcURL,
+        cancelToken: cancelToken,
+        data: {
+          "jsonrpc": "2.0",
+          "method": "xdag_getAverageFee",
+          "params": [],
+          "id": 1
+        },
+      );
+      if (response.data != null && response.data['result'] != null) {
+        double feeValue = double.tryParse(response.data['result'].toString()) ?? 0.0;
+        setState(() {
+          averageFee = "${feeValue.toStringAsFixed(2)} XDAG";
+        });
+      } else {
+        setState(() {
+          averageFee = "0.10 XDAG";
+        });
+      }
+    } catch (e) {
+      debugPrint("获取平均手续费失败：$e");
+      setState(() {
+        averageFee = "0.10 XDAG";  // 异常时用默认值
+      });
+    } finally {
+      setState(() {
+        isLoadingAverageFee = false;
+      });
+    }
   }
 
   static void isolateFunction(SendPort sendPort) async {
@@ -90,9 +138,13 @@ class _SendPageState extends State<SendPage> {
       String fromAddress = data[3] as String;
       String remark = data[4] as String;
       String nonce = data[5] as String;
+      String fee = data[6] as String;
+
       bool isPrivateKey = res.trim().split(' ').length == 1;
       bip32.BIP32 wallet = Helper.createWallet(isPrivate: isPrivateKey, content: res);
-      String result = TransactionHelper.getTransaction(fromAddress, toAddress, remark, double.parse(amount), wallet, nonce);
+
+      String result = TransactionHelper.getTransaction(fromAddress, toAddress, remark, double.parse(amount), wallet, nonce, double.parse(fee));
+
       sendPort.send(['success', result]);
     });
   }
@@ -121,9 +173,11 @@ class _SendPageState extends State<SendPage> {
     receivePort.listen((data) async {
       var sendAmount = amount;
       var sendRemark = remark;
+      var sendFee = fee;
+
       if (data is SendPort) {
         var subSendPort = data;
-        subSendPort.send([res, toAddress, amount, fromAddress, remark, nonce]);
+        subSendPort.send([res, toAddress, amount, fromAddress, remark, nonce, fee]);
       } else if (data is List<String>) {
         String result = data[1];
         // print('result: $result');
@@ -143,15 +197,17 @@ class _SendPageState extends State<SendPage> {
             var res = response.data['result'] as String;
             // 把内容存在 localstorage,返回列表的时候，从 localstorage 中获取
             if (res.length == 32 && res.trim().split(' ').length == 1) {
-              var transactionItem = Transaction(time: DateTime.now().toIso8601String(), amount: Helper.removeTrailingZeros(sendAmount.toString()), address: fromAddress, status: 'pending', from: fromAddress, to: toAddress, type: 0, hash: '', fee: 0.1, blockAddress: res, remark: sendRemark);
+              var transactionItem = Transaction(time: DateTime.now().toIso8601String(), amount: Helper.removeTrailingZeros(sendAmount.toString()), address: fromAddress, status: 'pending', from: fromAddress, to: toAddress, type: 0, hash: '', fee: double.parse(sendFee), blockAddress: res, remark: sendRemark);
               TransactionModal transactionModal = Provider.of<TransactionModal>(context, listen: false);
               transactionModal.addTransaction(transactionItem, fromAddress);
               controller.clear();
               controller2.clear();
+              controller3.clear();
               setState(() {
                 isLoad = false;
                 amount = '';
                 remark = '';
+                fee = '';
               });
 
               Helper.changeAndroidStatusBar(true);
@@ -191,9 +247,11 @@ class _SendPageState extends State<SendPage> {
               setState(() {
                 error = res;
                 isLoad = false;
+                showFeeBox = false;
               });
               controller.clear();
               controller2.clear();
+              controller3.clear();
             }
           }
         } on DioException catch (e) {
@@ -364,6 +422,114 @@ class _SendPageState extends State<SendPage> {
                           ],
                         ),
                       ),
+                      const SizedBox(height: 15),
+                      Row(
+                        children: [
+                          Checkbox(
+                            value: showFeeBox,
+                            onChanged: args.isFromScanQR  // 扫码场景禁用复选框
+                                ? null
+                                : (value) {
+                              setState(() {
+                                showFeeBox = value ?? false;
+                                if (!showFeeBox) {
+                                  fee = "";
+                                  controller3.clear();
+                                }
+                              });
+                            },
+                            activeColor: DarkColors.mainColor,
+                            checkColor: Colors.white,
+                          ),
+                          Text(
+                            AppLocalizations.of(context)!.express_fee,
+                            style: Helper.fitChineseFont(
+                              context,
+                              const TextStyle(
+                                fontSize: 16,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            "${AppLocalizations.of(context)!.average_fee}: $averageFee",
+                            style: Helper.fitChineseFont(
+                              context,
+                              const TextStyle(
+                                fontSize: 14,
+                                color: Colors.white54,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (showFeeBox && !args.isFromScanQR) ...[
+                        const SizedBox(height: 10),
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 150),
+                          decoration: BoxDecoration(
+                            color: DarkColors.bgColor,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: DarkColors.mainColor, width: 1),
+                          ),
+                          child: SingleChildScrollView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.all(15),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                AutoSizeTextField(
+                                  controller: controller3,
+                                  onChanged: (value) {
+                                    setState(() => fee = value);
+                                  },
+                                  minFontSize: 16,
+                                  maxLines: null,
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  keyboardAppearance: Brightness.dark,
+                                  enabled: !args.isFromScanQR,
+                                  style: Helper.fitChineseFont(
+                                    context,
+                                    const TextStyle(
+                                      fontSize: 16,
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                                  ],
+                                  decoration: InputDecoration(
+                                    filled: true,
+                                    fillColor: DarkColors.blockColor,
+                                    hintText: AppLocalizations.of(context)!.fee,
+                                    hintStyle: const TextStyle(color: Colors.white54),
+                                    border: const OutlineInputBorder(
+                                      borderSide: BorderSide.none,
+                                      borderRadius: BorderRadius.all(Radius.circular(8)),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  AppLocalizations.of(context)!.fee_explanation,
+                                  style: Helper.fitChineseFont(
+                                    context,
+                                    const TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.white70,
+                                      height: 1.5,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                       Text(AppLocalizations.of(context)!.remark, style: Helper.fitChineseFont(context, const TextStyle(fontSize: 16, color: Colors.white, fontWeight: FontWeight.w500))),
                       const SizedBox(height: 15),
                       AutoSizeTextField(
@@ -440,6 +606,18 @@ class _SendPageState extends State<SendPage> {
                         });
                         return;
                       }
+                      if (showFeeBox) {
+                        // 勾选了自定义手续费：必须输入有效数字
+                        if (fee == '' || fee.isEmpty || double.tryParse(fee) == null) {
+                         setState(() {
+                           error = 'Fee must be greater than 0';
+                         });
+                          return;
+                        }
+                      } else {
+                        // 未勾选：fee为0
+                        fee = '0';
+                      }
                       if (isLoad) return;
                       setState(() {
                         error = '';
@@ -452,7 +630,7 @@ class _SendPageState extends State<SendPage> {
 
                       if (context.mounted) {
                         Helper.changeAndroidStatusBar(true);
-                        var transactionItem = Transaction(time: '', amount: Helper.removeTrailingZeros(amount.toString()), address: wallet.address, status: 'pending', from: wallet.address, to: args.address, type: 0, hash: '', fee: 0.1, blockAddress: "", remark: remark);
+                        var transactionItem = Transaction(time: '', amount: Helper.removeTrailingZeros(amount.toString()), address: wallet.address, status: 'pending', from: wallet.address, to: args.address, type: 0, hash: '', fee: double.parse(fee), blockAddress: "", remark: remark);
                         bool? flag = await Helper.showBottomSheet(
                           context,
                           TransactionShowDetail(transaction: transactionItem),

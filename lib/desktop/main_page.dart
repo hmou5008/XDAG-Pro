@@ -510,10 +510,17 @@ class _SendCardState extends State<SendCard> {
   final TextEditingController controller0 = TextEditingController();
   final TextEditingController controller1 = TextEditingController();
   final TextEditingController controller2 = TextEditingController();
+  final TextEditingController controller3 = TextEditingController();
+
   String address = "";
   String amount = "";
   String remark = "";
+  String fee = "";
+  String averageFee = "0.1 XDAG"; // 平均手续费
+
   bool load = false;
+  bool showFeeBox = false; // 控制是否显示自定义手续费输入框
+  bool isLoadingAverageFee = false; // 控制平均手续费加载状态
 
   Isolate? isolate;
   final dio = Dio();
@@ -522,6 +529,7 @@ class _SendCardState extends State<SendCard> {
   @override
   void initState() {
     super.initState();
+    fetchAverageFee(); // 调用 RPC 方法（页面初始化时触发）
   }
 
   @override
@@ -530,6 +538,45 @@ class _SendCardState extends State<SendCard> {
     cancelToken.cancel();
     dio.close();
     super.dispose();
+  }
+
+  Future<void> fetchAverageFee() async {
+    setState(() {
+      isLoadingAverageFee = true;
+    });
+    try {
+      ConfigModal config = Provider.of<ConfigModal>(context, listen: false);
+      String rpcURL = config.getCurrentRpc();
+      Response response = await dio.post(
+        rpcURL,
+        cancelToken: cancelToken,
+        data: {
+          "jsonrpc": "2.0",
+          "method": "xdag_getAverageFee",
+          "params": [],
+          "id": 1
+        },
+      );
+      if (response.data != null && response.data['result'] != null) {
+        double feeValue = double.tryParse(response.data['result'].toString()) ?? 0.0;
+        setState(() {
+          averageFee = "${feeValue.toStringAsFixed(2)} XDAG";
+        });
+      } else {
+        setState(() {
+          averageFee = "0.10 XDAG";
+        });
+      }
+    } catch (e) {
+      debugPrint("获取平均手续费失败：$e");
+      setState(() {
+        averageFee = "0.10 XDAG";
+      });
+    } finally {
+      setState(() {
+        isLoadingAverageFee = false;
+      });
+    }
   }
 
   static void isolateFunction(SendPort sendPort) async {
@@ -543,9 +590,11 @@ class _SendCardState extends State<SendCard> {
       String fromAddress = data[3] as String;
       String remark = data[4] as String;
       String nonce = data[5] as String;
+      String fee = data[6] as String;
+
       bool isPrivateKey = res.trim().split(' ').length == 1;
       bip32.BIP32 wallet = Helper.createWallet(isPrivate: isPrivateKey, content: res);
-      String result = TransactionHelper.getTransaction(fromAddress, toAddress, remark, double.parse(amount), wallet, nonce);
+      String result = TransactionHelper.getTransaction(fromAddress, toAddress, remark, double.parse(amount), wallet, nonce, double.parse(fee));
       sendPort.send(['success', result]);
     });
   }
@@ -569,9 +618,11 @@ class _SendCardState extends State<SendCard> {
     receivePort.listen((data) async {
       var sendAmount = amount;
       var sendRemark = remark;
+      var sendFee = fee;
+
       if (data is SendPort) {
         var subSendPort = data;
-        subSendPort.send([res, toAddress, amount, fromAddress, remark, nonce]);
+        subSendPort.send([res, toAddress, amount, fromAddress, remark, nonce, fee]);
       } else if (data is List<String>) {
         String result = data[1];
         try {
@@ -587,15 +638,18 @@ class _SendCardState extends State<SendCard> {
             var res = response.data['result'] as String;
             // print(res);
             if (res.length == 32 && res.trim().split(' ').length == 1) {
-              var transactionItem = Transaction(time: '', amount: Helper.removeTrailingZeros(sendAmount.toString()), address: fromAddress, status: 'pending', from: fromAddress, to: toAddress, type: 0, hash: '', fee: 0, blockAddress: res, remark: sendRemark);
+              var transactionItem = Transaction(time: '', amount: Helper.removeTrailingZeros(sendAmount.toString()), address: fromAddress, status: 'pending', from: fromAddress, to: toAddress, type: 0, hash: '', fee: double.parse(sendFee), blockAddress: res, remark: sendRemark);
+              
               controller0.clear();
               controller1.clear();
               controller2.clear();
+              controller3.clear();
               setState(() {
                 load = false;
                 amount = '';
                 remark = '';
                 address = '';
+                fee = '';
               });
 
               showDialog(context: context, builder: (BuildContext context) => DesktopTransactionDetailPageWidget(transaction: transactionItem, address: fromAddress));
@@ -610,11 +664,13 @@ class _SendCardState extends State<SendCard> {
               controller0.clear();
               controller1.clear();
               controller2.clear();
+              controller3.clear();
               setState(() {
                 load = false;
                 amount = '';
                 remark = '';
                 address = '';
+                fee = '';
               });
             }
           }
@@ -656,10 +712,12 @@ class _SendCardState extends State<SendCard> {
             ),
             Expanded(
               flex: 1,
-              child: Padding(
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(15, 0, 15, 0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     const SizedBox(height: 10),
                     Text(AppLocalizations.of(context)!.to, style: Helper.fitChineseFont(context, const TextStyle(fontSize: 16, color: Colors.white, fontWeight: FontWeight.w500))),
@@ -723,7 +781,7 @@ class _SendCardState extends State<SendCard> {
                       ],
                       decoration: InputDecoration(
                         filled: true,
-                        contentPadding: const EdgeInsets.fromLTRB(15, 40, 15, 40),
+                        contentPadding: const EdgeInsets.fromLTRB(15, 30, 15, 30),
                         fillColor: DarkColors.bgColor,
                         hintText: 'XDAG',
                         hintStyle: Helper.fitChineseFont(context, const TextStyle(decoration: TextDecoration.none, fontSize: 32, fontWeight: FontWeight.w500, color: Colors.white54)),
@@ -731,6 +789,105 @@ class _SendCardState extends State<SendCard> {
                         focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: DarkColors.mainColor, width: 1), borderRadius: BorderRadius.all(Radius.circular(10))),
                       ),
                     ),
+                    // 控制手续费框显示
+                    const SizedBox(height: 15),
+                    Row(
+                      children: [
+                        Checkbox(
+                          value: showFeeBox,
+                          onChanged: (value) {
+                            setState(() {
+                              showFeeBox = value ?? false;
+                              if (!showFeeBox) {
+                                fee = "";
+                                controller3.clear();
+                              }
+                            });
+                          },
+                          activeColor: DarkColors.mainColor,
+                          checkColor: Colors.white,
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              AppLocalizations.of(context)!.express_fee,
+                              style: Helper.fitChineseFont(context, const TextStyle(
+                                fontSize: 16,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w500,
+                              )),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              "${AppLocalizations.of(context)!.average_fee}: $averageFee",
+                              style: Helper.fitChineseFont(context, const TextStyle(
+                                fontSize: 14,
+                                color: Colors.white54,
+                              )),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    // 手续费框
+                    if (showFeeBox) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 150),
+                        decoration: BoxDecoration(
+                          color: DarkColors.bgColor,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: DarkColors.mainColor, width: 1),
+                        ),
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.all(15),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              AutoSizeTextField(
+                                controller: controller3,
+                                onChanged: (value) {
+                                  setState(() => fee = value);
+                                },
+                                minFontSize: 16,
+                                maxLines: null,
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                keyboardAppearance: Brightness.dark,
+                                style: Helper.fitChineseFont(context, const TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w500,
+                                )),
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                                ],
+                                decoration: InputDecoration(
+                                  filled: true,
+                                  fillColor: DarkColors.blockColor,
+                                  hintText: AppLocalizations.of(context)!.fee,
+                                  hintStyle: const TextStyle(color: Colors.white54),
+                                  border: const OutlineInputBorder(
+                                    borderSide: BorderSide.none,
+                                    borderRadius: BorderRadius.all(Radius.circular(8)),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                "${AppLocalizations.of(context)!.fee_explanation}",
+                                style: Helper.fitChineseFont(context, const TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.white70,
+                                  height: 1.5,
+                                )),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 15),
                     Text(AppLocalizations.of(context)!.remark, style: Helper.fitChineseFont(context, const TextStyle(fontSize: 16, color: Colors.white, fontWeight: FontWeight.w500))),
                     const SizedBox(height: 10),
@@ -767,7 +924,7 @@ class _SendCardState extends State<SendCard> {
                         focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: DarkColors.mainColor, width: 1), borderRadius: BorderRadius.all(Radius.circular(10))),
                       ),
                     ),
-                    const Spacer(),
+                    const SizedBox(height: 30),
                     Row(
                       children: [
                         const Spacer(),
@@ -783,9 +940,26 @@ class _SendCardState extends State<SendCard> {
                               showDialog(context: context, builder: (context) => DesktopAlertModal(title: AppLocalizations.of(context)!.error, content: AppLocalizations.of(context)!.walletAddressError));
                               return;
                             }
+                            if (showFeeBox) {
+                              // 必须输入有效数字
+                              if (fee == '' || fee.isEmpty || double.tryParse(fee) == null) {
+                                if (context.mounted) {
+                                  showDialog(
+                                    context: context,
+                                    builder: (context) => DesktopAlertModal(
+                                      title: AppLocalizations.of(context)!.error,
+                                      content: AppLocalizations.of(context)!.invalid_fee,
+                                    ),
+                                  );
+                                }
+                                return;
+                              }
+                            } else {
+                              fee = '0';
+                            }
                             WalletModal walletModal = Provider.of<WalletModal>(context, listen: false);
                             Wallet wallet = walletModal.getWallet();
-                            var transactionItem = Transaction(time: '', amount: Helper.removeTrailingZeros(amount.toString()), address: wallet.address, status: 'pending', from: wallet.address, to: address, type: 0, hash: '', fee: 0, blockAddress: "", remark: remark);
+                            var transactionItem = Transaction(time: '', amount: Helper.removeTrailingZeros(amount.toString()), address: wallet.address, status: 'pending', from: wallet.address, to: address, type: 0, hash: '', fee: double.parse(fee), blockAddress: "", remark: remark);
                             var f = await showDialog(
                               context: context,
                               builder: (context) => DesktopTransactionDetail(transaction: transactionItem),
