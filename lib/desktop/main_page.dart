@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 
 import 'package:auto_size_text_field/auto_size_text_field.dart';
@@ -584,19 +585,40 @@ class _SendCardState extends State<SendCard> {
     sendPort.send(receivePort.sendPort);
 
     receivePort.listen((data) async {
-      String res = data[0] as String;
-      String toAddress = data[1] as String;
-      String amount = data[2] as String;
-      String fromAddress = data[3] as String;
-      String remark = data[4] as String;
-      String nonce = data[5] as String;
-      String fee = data[6] as String;
+      try {
+        String res = data[0] as String;
+        String toAddress = data[1] as String;
+        String amount = data[2] as String;
+        String fromAddress = data[3] as String;
+        String remark = data[4] as String;
+        String nonce = data[5] as String;
+        String fee = data[6] as String;
 
-      bool isPrivateKey = res.trim().split(' ').length == 1;
-      bip32.BIP32 wallet = Helper.createWallet(isPrivate: isPrivateKey, content: res);
-      String result = TransactionHelper.getTransaction(fromAddress, toAddress, remark, double.parse(amount), wallet, nonce, double.parse(fee));
-      sendPort.send(['success', result]);
+        bool isPrivateKey = res.trim().split(' ').length == 1;
+        bip32.BIP32 wallet = Helper.createWallet(isPrivate: isPrivateKey, content: res);
+        String result = TransactionHelper.getTransaction(fromAddress, toAddress, remark, double.parse(amount), wallet, nonce, double.parse(fee));
+        sendPort.send(['success', result]);
+      } catch (e) {
+        sendPort.send(['error', e.toString()]);
+      } finally {
+        receivePort.close();
+      }
     });
+  }
+
+  void _handleSendFailure(Object error, String rpcURL) {
+    debugPrint('Transaction send failed via $rpcURL: $error');
+    if (!mounted) return;
+    setState(() {
+      load = false;
+    });
+    showDialog(
+      context: context,
+      builder: (BuildContext context) => DesktopAlertModal(
+        title: AppLocalizations.of(context)!.error,
+        content: error.toString().replaceFirst('Exception: ', ''),
+      ),
+    );
   }
 
   void send(String res, String toAddress, String fromAddress) async {
@@ -607,14 +629,31 @@ class _SendCardState extends State<SendCard> {
     ConfigModal config = Provider.of<ConfigModal>(context, listen: false);
     String rpcURL = config.getCurrentRpc();
     String nonce = '';
-    Response response = await dio.post(rpcURL, cancelToken: cancelToken, data: {
-      "jsonrpc": "2.0",
-      "method": "xdag_getTransactionNonce",
-      "params": [fromAddress],
-      "id": 1
+    try {
+      Response response = await dio
+          .post(rpcURL, cancelToken: cancelToken, data: {
+            "jsonrpc": "2.0",
+            "method": "xdag_getTransactionNonce",
+            "params": [fromAddress],
+            "id": 1
+          })
+          .timeout(const Duration(seconds: 15));
+      var nonceResult = response.data?['result'];
+      if (nonceResult is! String || nonceResult.isEmpty) {
+        throw Exception(response.data?['error'] ?? 'Invalid nonce response');
+      }
+      nonce = nonceResult;
+      isolate = await Isolate.spawn(isolateFunction, receivePort.sendPort);
+    } catch (e) {
+      receivePort.close();
+      _handleSendFailure(e, rpcURL);
+      return;
+    }
+    final sendTimeout = Timer(const Duration(seconds: 45), () {
+      isolate?.kill(priority: Isolate.immediate);
+      receivePort.close();
+      _handleSendFailure('Transaction signing timed out', rpcURL);
     });
-    nonce = response.data['result'] as String;
-    isolate = await Isolate.spawn(isolateFunction, receivePort.sendPort);
     receivePort.listen((data) async {
       var sendAmount = amount;
       var sendRemark = remark;
@@ -624,14 +663,23 @@ class _SendCardState extends State<SendCard> {
         var subSendPort = data;
         subSendPort.send([res, toAddress, amount, fromAddress, remark, nonce, fee]);
       } else if (data is List<String>) {
+        sendTimeout.cancel();
+        if (data.length < 2 || data[0] != 'success') {
+          _handleSendFailure(data.length > 1 ? data[1] : 'Transaction signing failed', rpcURL);
+          isolate?.kill(priority: Isolate.immediate);
+          receivePort.close();
+          return;
+        }
         String result = data[1];
         try {
-          Response response = await dio.post(rpcURL, cancelToken: cancelToken, data: {
-            "jsonrpc": "2.0",
-            "method": "xdag_sendRawTransaction",
-            "params": [result],
-            "id": 1
-          });
+          Response response = await dio
+              .post(rpcURL, cancelToken: cancelToken, data: {
+                "jsonrpc": "2.0",
+                "method": "xdag_sendRawTransaction",
+                "params": [result],
+                "id": 1
+              })
+              .timeout(const Duration(seconds: 30));
           // 502 处理
 
           if (context.mounted) {
@@ -674,19 +722,13 @@ class _SendCardState extends State<SendCard> {
               });
             }
           }
-        } on DioException catch (e) {
+        } catch (e) {
           // 502 处理
-          if (e.response?.statusCode == 502) {
-            showDialog(context: context, builder: (BuildContext context) => DesktopAlertModal(title: AppLocalizations.of(context)!.error, content: AppLocalizations.of(context)!.error));
-            setState(() {
-              load = false;
-              // error = AppLocalizations.of(context)!.error;
-            });
-            return;
-          }
+          _handleSendFailure(e, rpcURL);
         }
 
         isolate?.kill(priority: Isolate.immediate);
+        receivePort.close();
       }
     });
   }

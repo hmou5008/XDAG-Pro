@@ -116,6 +116,7 @@ class _TransactionPageState extends State<TransactionPage> {
     Transaction transaction = widget.transaction;
     String address = widget.address;
     bool isSend = transaction.from == address;
+    String displayFee = fee.isNotEmpty ? fee : Helper.removeTrailingZeros((transaction.fee + 0.1).toString());
     // String otherAddress = isSend ? transaction.to : transaction.from;
     ContactsModal contacts = Provider.of<ContactsModal>(context);
     // 查询 otherAddress 是否在 contacts.contactsList 中
@@ -218,7 +219,7 @@ class _TransactionPageState extends State<TransactionPage> {
                             Helper.showToast(context, AppLocalizations.of(context)!.copied_to_clipboard);
                           }),
                       const SizedBox(height: 1),
-                      TransactionButton(showCopy: false, title: AppLocalizations.of(context)!.fee, value: '${transaction.fee + 0.1} XDAG', borderRadius: transaction.remark.isNotEmpty ? BorderRadius.zero : const BorderRadius.only(bottomLeft: Radius.circular(8), bottomRight: Radius.circular(8))),
+                      TransactionButton(showCopy: false, title: AppLocalizations.of(context)!.fee, value: '$displayFee XDAG', borderRadius: transaction.remark.isNotEmpty ? BorderRadius.zero : const BorderRadius.only(bottomLeft: Radius.circular(8), bottomRight: Radius.circular(8))),
                       const SizedBox(height: 1),
                       if (transaction.remark.isNotEmpty)
                         TransactionButton(
